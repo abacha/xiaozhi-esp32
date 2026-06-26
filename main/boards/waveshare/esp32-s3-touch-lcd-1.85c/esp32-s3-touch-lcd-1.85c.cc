@@ -390,6 +390,8 @@ public:
     virtual AudioCodec* GetAudioCodec() override {
         static BoxAudioCodec audio_codec(i2c_bus_, AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE,
             AUDIO_I2S_GPIO_MCLK, AUDIO_I2S_GPIO_BCLK, AUDIO_I2S_GPIO_WS, AUDIO_I2S_GPIO_DOUT, AUDIO_I2S_GPIO_DIN, AUDIO_CODEC_PA_PIN, AUDIO_CODEC_ES8311_ADDR, AUDIO_CODEC_ES7210_ADDR, AUDIO_INPUT_REFERENCE);
+            // This board's ES7210 mic is hardware-under-driven; run the analog PGA at max (~37.5 dB).
+            audio_codec.SetInputGain(48);
             return &audio_codec;
     }
     #endif

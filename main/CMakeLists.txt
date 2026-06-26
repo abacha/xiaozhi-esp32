@@ -875,6 +875,9 @@ endif()
 if(CONFIG_IDF_TARGET_ESP32S3 OR CONFIG_IDF_TARGET_ESP32P4)
     list(APPEND SOURCES "audio/wake_words/afe_wake_word.cc")
     list(APPEND SOURCES "audio/wake_words/custom_wake_word.cc")
+    if(CONFIG_USE_MICRO_WAKE_WORD)
+        list(APPEND SOURCES "audio/wake_words/micro_wake_word.cc")
+    endif()
 else()
     list(APPEND SOURCES "audio/wake_words/esp_wake_word.cc")
 endif()
@@ -1054,6 +1057,8 @@ idf_component_register(SRCS ${SOURCES}
                         efuse
                         bt
                         fatfs
+                        esp-tflite-micro
+                        microfrontend
                         ${MAIN_PRIV_REQUIRES_EXTRA}
                     )
 
