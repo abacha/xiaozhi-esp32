@@ -45,6 +45,10 @@ set(INCLUDE_DIRS "." "display" "display/lvgl_display" "display/lvgl_display/jpg"
 list(APPEND SOURCES
     "boards/common/board.cc"
     "boards/common/wifi_board.cc"
+    "boards/waveshare/esp32-s3-touch-lcd-1.85c/pager_ai_poll.cc"
+    "boards/waveshare/esp32-s3-touch-lcd-1.85c/pager_http.cc"
+    "boards/waveshare/esp32-s3-touch-lcd-1.85c/pager_mode.cc"
+    "boards/waveshare/esp32-s3-touch-lcd-1.85c/pager_screen.cc"
     "boards/common/ml307_board.cc"
     "boards/common/nt26_board.cc"
     "boards/common/dual_network_board.cc"
@@ -1059,6 +1063,7 @@ idf_component_register(SRCS ${SOURCES}
                         fatfs
                         esp-tflite-micro
                         microfrontend
+                        esp_http_client
                         ${MAIN_PRIV_REQUIRES_EXTRA}
                     )
 

@@ -51,7 +51,7 @@ void PagerMode::RenderNow() {
         if (pager_active_) { lv_screen_load(stock_screen_); pager_active_ = false; }
         int d = queue_.Depth();
         if (d > 0) {
-            char b[8]; std::snprintf(b, sizeof(b), "%d", d);
+            char b[16]; snprintf(b, sizeof(b), "%d", d);
             lv_label_set_text(badge_, b);
             lv_obj_clear_flag(badge_, LV_OBJ_FLAG_HIDDEN);
             lv_obj_move_foreground(badge_);

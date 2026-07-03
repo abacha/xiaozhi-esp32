@@ -68,7 +68,7 @@ esp_err_t pager_post_alert(httpd_req_t* req) {
     const char* idstr = cJSON_IsString(id) ? id->valuestring : nullptr;
     if (!idstr) { // auto-generate from tick count
         static uint32_t seq = 0;
-        std::snprintf(idbuf, sizeof(idbuf), "auto%lu", (unsigned long)(++seq));
+        snprintf(idbuf, sizeof(idbuf), "auto%lu", (unsigned long)(++seq));
         idstr = idbuf;
     }
     PagerAlert a(cJSON_IsString(agent) ? agent->valuestring : "agent",
@@ -105,7 +105,7 @@ esp_err_t pager_post_clear(httpd_req_t* req) {
 
 esp_err_t pager_get_status(httpd_req_t* req) {
     char buf[64];
-    std::snprintf(buf, sizeof(buf), "{\"depth\":%d}", g_self->queue()->Depth());
+    snprintf(buf, sizeof(buf), "{\"depth\":%d}", g_self->queue()->Depth());
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
 }

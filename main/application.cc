@@ -8,6 +8,9 @@
 #include "assets/lang_config.h"
 #include "mcp_server.h"
 #include "assets.h"
+#if defined(CONFIG_BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_LCD_1_85C)
+#include "boards/waveshare/esp32-s3-touch-lcd-1.85c/pager_mode.h"
+#endif
 #include "settings.h"
 
 #include <cstring>
@@ -249,6 +252,16 @@ void Application::Run() {
             clock_ticks_++;
             auto display = Board::GetInstance().GetDisplay();
             display->UpdateStatusBar();
+            
+            // Initialize once when display is ready, then tick every second.
+            if (display->IsSetupUICalled()) {
+                static bool pager_inited = false;
+                if (!pager_inited) {
+                    PagerMode::GetInstance().Init(lv_screen_active());
+                    pager_inited = true;
+                }
+                PagerMode::GetInstance().Tick();
+            }
         
             // Print debug info every 10 seconds
             if (clock_ticks_ % 10 == 0) {
