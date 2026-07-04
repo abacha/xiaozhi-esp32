@@ -10,8 +10,9 @@ public:
     void Build();                 // create the screen + widgets once
     lv_obj_t* screen() { return screen_; }
 
-    // Idle status ring: wifi %, one AI profile's arcs, pending alert count.
-    void RenderRing(int wifi_pct, const PagerAiProfile* profile, bool ai_stale, int queue_depth);
+    // Idle status ring: wifi arc + one AI profile's severity-scaled arcs, with
+    // the 5h/7d figures as the hero readout and the device IP at the bottom.
+    void RenderRing(int wifi_pct, const PagerAiProfile* profile, bool ai_stale, const char* ip);
     // Full-screen alert.
     void RenderAlert(const PagerAlert& a, int remaining);
 
@@ -20,7 +21,11 @@ private:
     lv_obj_t* arc_wifi_ = nullptr;
     lv_obj_t* arc_7d_ = nullptr;
     lv_obj_t* arc_5h_ = nullptr;
-    lv_obj_t* center_label_ = nullptr;  // profile label or pending count
+    lv_obj_t* center_box_ = nullptr;    // container for the ring readout
+    lv_obj_t* profile_label_ = nullptr; // profile name (small, top)
+    lv_obj_t* val_5h_ = nullptr;        // "5h NN%" hero, color-matched to inner arc
+    lv_obj_t* val_7d_ = nullptr;        // "7d NN%" hero, color-matched to middle arc
+    lv_obj_t* ip_label_ = nullptr;      // device IP (small, bottom)
     lv_obj_t* alert_box_ = nullptr;     // container for alert text
     lv_obj_t* alert_agent_ = nullptr;
     lv_obj_t* alert_msg_ = nullptr;

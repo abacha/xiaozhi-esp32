@@ -3,6 +3,7 @@
 #include "board.h"
 #include "display/display.h"
 #include <esp_wifi.h>
+#include <esp_netif.h>
 #include <cstdio>
 
 static int WifiPct() {
@@ -11,6 +12,16 @@ static int WifiPct() {
     int rssi = ap.rssi;                       // ~ -90..-30
     int pct = 2 * (rssi + 100);               // -100->0, -50->100
     return pct < 0 ? 0 : (pct > 100 ? 100 : pct);
+}
+
+static const char* IpStr(char* buf, size_t n) {
+    buf[0] = '\0';
+    esp_netif_t* nif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    esp_netif_ip_info_t ip;
+    if (nif && esp_netif_get_ip_info(nif, &ip) == ESP_OK) {
+        std::snprintf(buf, n, IPSTR, IP2STR(&ip.ip));
+    }
+    return buf;
 }
 
 void PagerMode::Init(lv_obj_t* stock_screen) {
@@ -68,7 +79,8 @@ void PagerMode::RenderNow() {
     } else {
         const PagerAiProfile* p = (usage_.count > 0)
             ? &usage_.profiles[profile_idx_ % usage_.count] : nullptr;
-        screen_.RenderRing(WifiPct(), p, usage_.stale, 0);
+        char ip[16];
+        screen_.RenderRing(WifiPct(), p, usage_.stale, IpStr(ip, sizeof(ip)));
     }
 }
 
