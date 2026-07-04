@@ -2,17 +2,9 @@
 #include "application.h"
 #include "board.h"
 #include "display/display.h"
-#include <esp_wifi.h>
 #include <esp_netif.h>
+#include <esp_log.h>
 #include <cstdio>
-
-static int WifiPct() {
-    wifi_ap_record_t ap;
-    if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK) return 0;
-    int rssi = ap.rssi;                       // ~ -90..-30
-    int pct = 2 * (rssi + 100);               // -100->0, -50->100
-    return pct < 0 ? 0 : (pct > 100 ? 100 : pct);
-}
 
 static const char* IpStr(char* buf, size_t n) {
     buf[0] = '\0';
@@ -29,7 +21,8 @@ void PagerMode::Init(lv_obj_t* stock_screen) {
     auto* display = Board::GetInstance().GetDisplay();
     DisplayLockGuard lock(display);
     screen_.Build();
-    lv_obj_add_event_cb(screen_.screen(), GestureCb, LV_EVENT_GESTURE, this);
+    lv_obj_add_event_cb(screen_.screen(), PressCb, LV_EVENT_PRESSED, this);
+    lv_obj_add_event_cb(screen_.screen(), ReleaseCb, LV_EVENT_RELEASED, this);
     lv_obj_add_event_cb(screen_.screen(), TapCb, LV_EVENT_CLICKED, this);
 
     badge_ = lv_label_create(stock_screen_);
@@ -80,16 +73,33 @@ void PagerMode::RenderNow() {
         const PagerAiProfile* p = (usage_.count > 0)
             ? &usage_.profiles[profile_idx_ % usage_.count] : nullptr;
         char ip[16];
-        screen_.RenderRing(WifiPct(), p, usage_.stale, IpStr(ip, sizeof(ip)));
+        screen_.RenderRing(p, usage_.stale, IpStr(ip, sizeof(ip)));
     }
 }
 
-void PagerMode::GestureCb(lv_event_t* e) {
+// Manual swipe detection via touch-down/up delta-X. LVGL's built-in gesture
+// recognizer proved unreliable with this panel; press/release deltas are
+// deterministic. A horizontal move beyond kSwipePx cycles the profile.
+void PagerMode::PressCb(lv_event_t* e) {
     auto* self = static_cast<PagerMode*>(lv_event_get_user_data(e));
-    lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
+    lv_point_t p;
+    lv_indev_get_point(lv_indev_active(), &p);
+    self->press_x_ = p.x;
+}
+
+void PagerMode::ReleaseCb(lv_event_t* e) {
+    auto* self = static_cast<PagerMode*>(lv_event_get_user_data(e));
+    lv_point_t p;
+    lv_indev_get_point(lv_indev_active(), &p);
+    ESP_LOGW("pager_swipe", "press_x=%d release_x=%d dx=%d count=%d q=%d",
+             self->press_x_, (int)p.x, (int)p.x - self->press_x_,
+             self->usage_.count, self->queue_.Depth());
     if (self->queue_.Depth() > 0 || self->usage_.count == 0) return; // ring view only
-    if (dir == LV_DIR_LEFT)  self->profile_idx_ = (self->profile_idx_ + 1) % self->usage_.count;
-    if (dir == LV_DIR_RIGHT) self->profile_idx_ = (self->profile_idx_ - 1 + self->usage_.count) % self->usage_.count;
+    constexpr int kSwipePx = 40;
+    int dx = p.x - self->press_x_;
+    if (dx <= -kSwipePx) self->profile_idx_ = (self->profile_idx_ + 1) % self->usage_.count;
+    else if (dx >= kSwipePx) self->profile_idx_ = (self->profile_idx_ - 1 + self->usage_.count) % self->usage_.count;
+    else return;
     self->RenderNow();
 }
 

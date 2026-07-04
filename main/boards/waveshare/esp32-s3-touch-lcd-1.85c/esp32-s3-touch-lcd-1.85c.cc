@@ -15,7 +15,8 @@
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_st77916.h>
 #include <esp_timer.h>
-#include "esp_io_expander_tca9554.h"
+#include <esp_lcd_touch_cst816s.h>
+#include <esp_lvgl_port.h>
 
 #define TAG "waveshare_lcd_1_85c"
 
@@ -215,8 +216,8 @@ class CustomBoard : public WifiBoard {
 private:
     Button boot_button_;
     i2c_master_bus_handle_t i2c_bus_;
-    esp_io_expander_handle_t io_expander = NULL;
     LcdDisplay* display_;
+    esp_lcd_touch_handle_t tp_ = nullptr;
 
     void InitializeI2c() {
         // Initialize I2C peripheral
@@ -225,34 +226,41 @@ private:
             .sda_io_num = I2C_SDA_IO,
             .scl_io_num = I2C_SCL_IO,
             .clk_source = I2C_CLK_SRC_DEFAULT,
+            .glitch_ignore_cnt = 7,
+            .flags = { .enable_internal_pullup = true },
         };
         ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_cfg, &i2c_bus_));
     }
     
+    // Drive the TCA9554 directly at 50kHz instead of the vendored esp_io_expander
+    // driver, which hardcodes 400kHz — a speed this board's weak (internal) pull-ups
+    // can't sustain, so its writes silently NACK and the reset lines never move.
+    // EXIO0/1/2 gate the LCD + touch resets on the 1.85C; pulse all three low→high
+    // to release the CST816 (and LCD) from reset. Registers: 0x03=config(0=output),
+    // 0x01=output port.
     void InitializeTca9554(void)
     {
-        esp_err_t ret = esp_io_expander_new_i2c_tca9554(i2c_bus_, I2C_ADDRESS, &io_expander);
-        if(ret != ESP_OK)
-            ESP_LOGE(TAG, "TCA9554 create returned error");        
-
-        // uint32_t input_level_mask = 0;
-        // ret = esp_io_expander_set_dir(io_expander, IO_EXPANDER_PIN_NUM_0 | IO_EXPANDER_PIN_NUM_1, IO_EXPANDER_INPUT);               // 设置引脚 EXIO0 和 EXIO1 模式为输入 
-        // ret = esp_io_expander_get_level(io_expander, IO_EXPANDER_PIN_NUM_0 | IO_EXPANDER_PIN_NUM_1, &input_level_mask);             // 获取引脚 EXIO0 和 EXIO1 的电平状态,存放在 input_level_mask 中
-
-        // ret = esp_io_expander_set_dir(io_expander, IO_EXPANDER_PIN_NUM_2 | IO_EXPANDER_PIN_NUM_3, IO_EXPANDER_OUTPUT);              // 设置引脚 EXIO2 和 EXIO3 模式为输出
-        // ret = esp_io_expander_set_level(io_expander, IO_EXPANDER_PIN_NUM_2 | IO_EXPANDER_PIN_NUM_3, 1);                             // 将引脚电平设置为 1
-        // ret = esp_io_expander_print_state(io_expander);                                                                             // 打印引脚状态
-
-        ret = esp_io_expander_set_dir(io_expander, IO_EXPANDER_PIN_NUM_0 | IO_EXPANDER_PIN_NUM_1, IO_EXPANDER_OUTPUT);                 // 设置引脚 EXIO0 和 EXIO1 模式为输出
-        ESP_ERROR_CHECK(ret);
-        ret = esp_io_expander_set_level(io_expander, IO_EXPANDER_PIN_NUM_0 | IO_EXPANDER_PIN_NUM_1, 1);                                // 复位 LCD 与 TouchPad
-        ESP_ERROR_CHECK(ret);
-        vTaskDelay(pdMS_TO_TICKS(300));
-        ret = esp_io_expander_set_level(io_expander, IO_EXPANDER_PIN_NUM_0 | IO_EXPANDER_PIN_NUM_1, 0);                                // 复位 LCD 与 TouchPad
-        ESP_ERROR_CHECK(ret);
-        vTaskDelay(pdMS_TO_TICKS(300));
-        ret = esp_io_expander_set_level(io_expander, IO_EXPANDER_PIN_NUM_0 | IO_EXPANDER_PIN_NUM_1, 1);                                // 复位 LCD 与 TouchPad
-        ESP_ERROR_CHECK(ret);
+        i2c_device_config_t dcfg = {
+            .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+            .device_address = 0x20,
+            .scl_speed_hz = 50000,
+        };
+        i2c_master_dev_handle_t dev = nullptr;
+        if (i2c_master_bus_add_device(i2c_bus_, &dcfg, &dev) != ESP_OK) {
+            ESP_LOGE(TAG, "TCA9554 add_device failed");
+            return;
+        }
+        auto w = [&](uint8_t reg, uint8_t val) {
+            uint8_t buf[2] = { reg, val };
+            esp_err_t r = i2c_master_transmit(dev, buf, sizeof(buf), 100);
+            if (r != ESP_OK) ESP_LOGE(TAG, "TCA9554 write reg 0x%02x: %s", reg, esp_err_to_name(r));
+        };
+        w(0x03, 0xF8);                    // EXIO0/1/2 outputs, rest inputs
+        w(0x01, 0x00);                    // assert (low) LCD + touch resets
+        vTaskDelay(pdMS_TO_TICKS(20));
+        w(0x01, 0x07);                    // release (high) EXIO0/1/2
+        vTaskDelay(pdMS_TO_TICKS(50));    // let the CST816 boot before we probe it
+        i2c_master_bus_rm_device(dev);
     }
 
     void InitializeSpi() {
@@ -355,6 +363,54 @@ private:
                                     DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
     }
 
+    // The SPD2010 is a combined display+touch controller; the panel was wired
+    // here but the touch was never registered as an LVGL input device, so taps
+    // never reached the UI. Attach the touch to the shared I2C bus and hand it
+    // to esp_lvgl_port (poll mode; the panel reset already released the TP).
+    // This board revision carries a CST816 touch controller at I2C 0x15 with its
+    // INT on GPIO4 (confirmed against a known-good config for the 1.85C) — NOT the
+    // SPD2010 @ 0x53 the stock driver assumed. Conservative 100kHz to tolerate the
+    // bus's weak (internal) pull-ups.
+    void InitializeTouch() {
+        esp_lcd_panel_io_handle_t tp_io_handle = nullptr;
+        // Built by hand (not the CST816S config macro): the macro lists designators
+        // in an order C++20 rejects. Conservative 100kHz for the weak-pull-up bus.
+        esp_lcd_panel_io_i2c_config_t tp_io_config = {
+            .dev_addr = ESP_LCD_TOUCH_IO_I2C_CST816S_ADDRESS,
+            .control_phase_bytes = 1,
+            .dc_bit_offset = 0,
+            .lcd_cmd_bits = 8,
+            .lcd_param_bits = 0,
+            .flags = { .dc_low_on_data = 0, .disable_control_phase = 1 },
+            .scl_speed_hz = 50000,
+        };
+        // Touch is non-essential: never let a touch init failure bootloop the box.
+        if (esp_lcd_new_panel_io_i2c(i2c_bus_, &tp_io_config, &tp_io_handle) != ESP_OK) {
+            ESP_LOGE(TAG, "touch panel_io init failed; touch disabled");
+            return;
+        }
+
+        esp_lcd_touch_config_t tp_cfg = {
+            .x_max = DISPLAY_WIDTH,
+            .y_max = DISPLAY_HEIGHT,
+            .rst_gpio_num = GPIO_NUM_NC,
+            .int_gpio_num = TP_PIN_NUM_INT,
+            .levels = { .reset = 0, .interrupt = 0 },
+            .flags = { .swap_xy = DISPLAY_SWAP_XY, .mirror_x = DISPLAY_MIRROR_X, .mirror_y = DISPLAY_MIRROR_Y },
+        };
+        if (esp_lcd_touch_new_i2c_cst816s(tp_io_handle, &tp_cfg, &tp_) != ESP_OK) {
+            ESP_LOGE(TAG, "CST816 touch init failed; touch disabled");
+            return;
+        }
+
+        lvgl_port_touch_cfg_t touch_cfg = {
+            .disp = lv_display_get_default(),
+            .handle = tp_,
+        };
+        lvgl_port_add_touch(&touch_cfg);
+        ESP_LOGI(TAG, "CST816 touch registered with LVGL");
+    }
+
     void InitializeButtons() {
         boot_button_.OnClick([this]() {
             auto& app = Application::GetInstance();
@@ -373,6 +429,7 @@ public:
         InitializeTca9554();
         InitializeSpi();
         Initializest77916Display();
+        InitializeTouch();
         InitializeButtons();
         GetBacklight()->RestoreBrightness();
     }

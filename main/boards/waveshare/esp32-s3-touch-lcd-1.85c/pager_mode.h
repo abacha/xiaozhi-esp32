@@ -15,7 +15,8 @@ public:
 
 private:
     void RenderNow();
-    static void GestureCb(lv_event_t* e);
+    static void PressCb(lv_event_t* e);
+    static void ReleaseCb(lv_event_t* e);
     static void TapCb(lv_event_t* e);
 
     lv_obj_t* stock_screen_ = nullptr;
@@ -26,5 +27,6 @@ private:
     PagerHttp http_;
     PagerAiPoll poll_;
     int profile_idx_ = 0;
+    int press_x_ = 0;           // touch-down X for manual swipe detection
     bool pager_active_ = false; // true when our screen is loaded
 };

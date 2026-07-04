@@ -6,11 +6,15 @@
 #include <string>
 
 #define TAG "pager_ai_poll"
-static const char* kUrl = "http://pylon.nexus.lan/ai-usage.json";
+// Use pylon's IP directly: the box's DHCP DNS doesn't resolve the .nexus.lan
+// domain (getaddrinfo fails), though the host is reachable. Proper fix is the
+// box's DNS/search-domain; this unblocks the poll meanwhile.
+static const char* kUrl = "http://192.168.15.250/ai-usage.json";
 
 struct PollCtx {
     PagerAiUsage* out;
     std::function<void()> cb;
+    esp_timer_handle_t timer;
 };
 
 static void DoFetch(PollCtx* ctx) {
@@ -38,15 +42,22 @@ static void DoFetch(PollCtx* ctx) {
     if (ctx->cb) ctx->cb();
 }
 
+// Self-rescheduling one-shot: retry fast (60s) while stale so a pre-WiFi boot
+// failure recovers quickly, then back off to 30 min once data is fresh.
+static void Tick(void* a) {
+    auto* ctx = static_cast<PollCtx*>(a);
+    DoFetch(ctx);
+    uint64_t next_us = ctx->out->stale ? 60ULL * 1000000 : 30ULL * 60 * 1000000;
+    esp_timer_start_once(ctx->timer, next_us);
+}
+
 void PagerAiPoll::Start(PagerAiUsage* out, std::function<void()> on_update) {
-    auto* ctx = new PollCtx{ out, std::move(on_update) };
+    auto* ctx = new PollCtx{ out, std::move(on_update), nullptr };
     esp_timer_create_args_t args = {};
-    args.callback = [](void* a){ DoFetch(static_cast<PollCtx*>(a)); };
+    args.callback = Tick;
     args.arg = ctx;
     args.dispatch_method = ESP_TIMER_TASK;
     args.name = "pager_ai_poll";
-    esp_timer_handle_t h;
-    esp_timer_create(&args, &h);
-    DoFetch(ctx);                                   // prime once now
-    esp_timer_start_periodic(h, 30ULL * 60 * 1000000); // 30 min
+    esp_timer_create(&args, &ctx->timer);
+    esp_timer_start_once(ctx->timer, 5ULL * 1000000); // first try after WiFi settles
 }

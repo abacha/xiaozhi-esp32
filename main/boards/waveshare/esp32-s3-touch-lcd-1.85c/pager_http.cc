@@ -1,6 +1,9 @@
 #include "pager_http.h"
 #include <cJSON.h>
 #include <esp_log.h>
+#include <esp_timer.h>
+#include <esp_system.h>
+#include <esp_wifi.h>
 #include <cstring>
 
 #define TAG "pager_http"
@@ -25,6 +28,7 @@ static char* ReadBody(httpd_req_t* req) {
 extern "C" esp_err_t pager_post_alert(httpd_req_t* req);
 extern "C" esp_err_t pager_post_clear(httpd_req_t* req);
 extern "C" esp_err_t pager_get_status(httpd_req_t* req);
+extern "C" esp_err_t pager_get_health(httpd_req_t* req);
 
 void PagerHttp::Start(PagerAlertQueue* queue, std::function<void()> on_change) {
     queue_ = queue;
@@ -41,9 +45,11 @@ void PagerHttp::Start(PagerAlertQueue* queue, std::function<void()> on_change) {
     httpd_uri_t alert = { "/alert",  HTTP_POST, pager_post_alert,  nullptr };
     httpd_uri_t clear = { "/clear",  HTTP_POST, pager_post_clear,  nullptr };
     httpd_uri_t status= { "/status", HTTP_GET,  pager_get_status,  nullptr };
+    httpd_uri_t health= { "/health", HTTP_GET,  pager_get_health,  nullptr };
     httpd_register_uri_handler(server_, &alert);
     httpd_register_uri_handler(server_, &clear);
     httpd_register_uri_handler(server_, &status);
+    httpd_register_uri_handler(server_, &health);
     ESP_LOGI(TAG, "pager http server on :80");
 }
 
@@ -106,6 +112,22 @@ esp_err_t pager_post_clear(httpd_req_t* req) {
 esp_err_t pager_get_status(httpd_req_t* req) {
     char buf[64];
     snprintf(buf, sizeof(buf), "{\"depth\":%d}", g_self->queue()->Depth());
+    httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
+esp_err_t pager_get_health(httpd_req_t* req) {
+    int rssi = 0;
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) rssi = ap.rssi;
+
+    char buf[128];
+    snprintf(buf, sizeof(buf),
+             "{\"ok\":true,\"uptime_s\":%lu,\"heap\":%lu,\"rssi\":%d,\"depth\":%d}",
+             (unsigned long)(esp_timer_get_time() / 1000000),
+             (unsigned long)esp_get_free_heap_size(),
+             rssi, g_self->queue()->Depth());
+    httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
 }
