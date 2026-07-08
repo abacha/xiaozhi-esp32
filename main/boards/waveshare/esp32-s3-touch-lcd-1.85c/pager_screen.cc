@@ -3,6 +3,30 @@
 #include <cstdio>
 #include <cstring>
 #include <cctype>
+#include <cmath>
+
+// Divider geometry: LVGL arcs start at the top (rotation 270) and grow
+// clockwise. A segment boundary i of n sits at (270 + i*360/n) degrees, with
+// y pointing down. Cutting a background-colored line across the band splits the
+// ring into n visible segments. Points must outlive the line (LVGL keeps the
+// pointer), and there is a single PagerScreen, so a static buffer is enough:
+// weekly 7 + session 5 = 12 dividers, 2 points each.
+static lv_point_precise_t s_tick_pts[24];
+static int s_tick_n = 0;
+
+static void AddTicks(lv_obj_t* parent, int n, int r_in, int r_out, unsigned color) {
+    for (int i = 0; i < n && s_tick_n + 2 <= 24; ++i) {
+        double a = (270.0 + i * 360.0 / n) * 3.14159265358979 / 180.0;
+        lv_point_precise_t* pts = &s_tick_pts[s_tick_n];
+        pts[0].x = 180 + r_in  * std::cos(a);  pts[0].y = 180 + r_in  * std::sin(a);
+        pts[1].x = 180 + r_out * std::cos(a);  pts[1].y = 180 + r_out * std::sin(a);
+        s_tick_n += 2;
+        lv_obj_t* line = lv_line_create(parent);
+        lv_line_set_points(line, pts, 2);
+        lv_obj_set_style_line_width(line, 4, 0);
+        lv_obj_set_style_line_color(line, lv_color_hex(color), 0);
+    }
+}
 
 static lv_obj_t* MakeArc(lv_obj_t* parent, int size, lv_color_t color) {
     lv_obj_t* arc = lv_arc_create(parent);
@@ -16,6 +40,8 @@ static lv_obj_t* MakeArc(lv_obj_t* parent, int size, lv_color_t color) {
     lv_obj_clear_flag(arc, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_arc_width(arc, 14, LV_PART_MAIN);
     lv_obj_set_style_arc_width(arc, 14, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_rounded(arc, false, LV_PART_MAIN);      // flat ends...
+    lv_obj_set_style_arc_rounded(arc, false, LV_PART_INDICATOR); // ...align with straight dividers
     lv_obj_set_style_arc_color(arc, lv_color_hex(0x1a1a1a), LV_PART_MAIN);
     lv_obj_set_style_arc_color(arc, color, LV_PART_INDICATOR);
     return arc;
@@ -28,9 +54,18 @@ void PagerScreen::Build() {
     lv_obj_set_scrollbar_mode(screen_, LV_SCROLLBAR_MODE_OFF);
     lv_obj_add_flag(screen_, LV_OBJ_FLAG_CLICKABLE); // tap-to-ack lands here
 
-    arc_wifi_ = MakeArc(screen_, 340, lv_color_hex(0x2a7fc4)); // blue (fixed)
-    arc_7d_   = MakeArc(screen_, 290, lv_color_hex(0x333333)); // severity-scaled
-    arc_5h_   = MakeArc(screen_, 240, lv_color_hex(0x333333)); // severity-scaled
+    arc_week_ = MakeArc(screen_, 340, lv_color_hex(0x333333)); // 7d reset, profile-hued
+    arc_sess_ = MakeArc(screen_, 240, lv_color_hex(0x333333)); // 5h reset, profile-hued
+
+    // Segment dividers over both clocks: 7 day-marks on the outer band, 5
+    // hour-marks on the inner. Background-colored so they read as gaps.
+    ticks_ = lv_obj_create(screen_);
+    lv_obj_remove_style_all(ticks_);
+    lv_obj_set_size(ticks_, 360, 360);
+    lv_obj_center(ticks_);
+    lv_obj_clear_flag(ticks_, LV_OBJ_FLAG_CLICKABLE);
+    AddTicks(ticks_, 7, 160, 180, 0x0a0a12); // outer band ~163..177
+    AddTicks(ticks_, 5, 110, 130, 0x0a0a12); // inner band ~113..127
 
     // Center readout: profile label, the two hero figures, device IP.
     center_box_ = lv_obj_create(screen_);
@@ -107,6 +142,15 @@ static unsigned AgentColor(const char* agent) {
     return 0x444444; // unknown
 }
 
+// Reset-clock hue per profile: the two rings are two shades of one family so
+// the profile reads at a glance (Hubstaff blues, Trag greens).
+struct RingHue { unsigned week; unsigned sess; };
+static RingHue HueFor(const char* id) {
+    if (std::strcmp(id, "hs") == 0) return {0x2a7fc4, 0x7cc0f0}; // blues
+    if (std::strcmp(id, "t")  == 0) return {0x1f9d55, 0x7bd6a0}; // greens
+    return {0x2a7fc4, 0x7cc0f0};
+}
+
 static void SetArc(lv_obj_t* arc, int pct, unsigned color_hex) {
     lv_arc_set_value(arc, pct < 0 ? 0 : (pct > 100 ? 100 : pct));
     lv_obj_set_style_arc_color(arc, lv_color_hex(color_hex), LV_PART_INDICATOR);
@@ -123,20 +167,23 @@ static void SetFigure(lv_obj_t* lbl, const char* tag, int pct, bool stale) {
 void PagerScreen::RenderRing(const PagerAiProfile* profile,
                              bool ai_stale, const char* ip) {
     lv_obj_add_flag(alert_box_, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(arc_wifi_, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(arc_7d_, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(arc_5h_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(arc_week_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(arc_sess_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(ticks_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(center_box_, LV_OBJ_FLAG_HIDDEN);
 
     int five_h  = profile ? profile->five_h : 0;
     int seven_d = profile ? profile->seven_d : 0;
 
-    // Outer arc: fraction of the 7-day window left until the usage resets.
-    constexpr int kResetWindowS = 7 * 24 * 3600;
-    int reset_pct = profile ? (int)((long)profile->reset_in_s * 100 / kResetWindowS) : 0;
-    SetArc(arc_wifi_, reset_pct, ai_stale ? 0x333333 : 0x2a7fc4);
-    SetArc(arc_7d_, seven_d, AiArcColor(seven_d, ai_stale));
-    SetArc(arc_5h_, five_h, AiArcColor(five_h, ai_stale));
+    // Reset clocks: fraction of each window left until it resets, emptying to
+    // zero at reset. Outer = 7-day window, inner = 5-hour window.
+    constexpr int kWeekS = 7 * 24 * 3600;
+    constexpr int kSessS = 5 * 3600;
+    int week_pct = profile ? (int)((long)profile->reset_in_s * 100 / kWeekS) : 0;
+    int sess_pct = profile ? (int)((long)profile->five_reset_in_s * 100 / kSessS) : 0;
+    RingHue hue = HueFor(profile ? profile->id : "");
+    SetArc(arc_week_, week_pct, ai_stale ? 0x333333 : hue.week);
+    SetArc(arc_sess_, sess_pct, ai_stale ? 0x333333 : hue.sess);
 
     lv_label_set_text(profile_label_, profile ? profile->label : "");
     SetFigure(val_5h_, "5h", five_h, ai_stale);
@@ -145,9 +192,9 @@ void PagerScreen::RenderRing(const PagerAiProfile* profile,
 }
 
 void PagerScreen::RenderAlert(const PagerAlert& a, int remaining) {
-    lv_obj_add_flag(arc_wifi_, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(arc_7d_, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(arc_5h_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(arc_week_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(arc_sess_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ticks_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(center_box_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_style_bg_color(alert_box_, lv_color_hex(AgentColor(a.agent)), LV_PART_MAIN);
     lv_obj_clear_flag(alert_box_, LV_OBJ_FLAG_HIDDEN);
